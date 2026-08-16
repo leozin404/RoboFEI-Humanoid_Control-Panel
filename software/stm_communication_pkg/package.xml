@@ -1,1 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>stm_communication_pkg</name>
+  <version>0.1.0</version>
+  <description>
+    Serial bridge between the STM32U575 control panel firmware and ROS2.
+    Pure I/O layer: encodes PanelStatus into framed bytes for the STM32,
+    and decodes ButtonEvent frames coming back from it. Contains no panel
+    logic — see control_panel_pkg for that.
+  </description>
+  <maintainer email="leosilva200311@gmail.com">Leonardo Aparecido da Silva</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>custom_interfaces</depend>
+  <depend>libserial-dev</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
 
