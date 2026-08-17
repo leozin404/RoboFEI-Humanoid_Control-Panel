@@ -25,12 +25,6 @@ ament_target_dependencies(system_status_node rclcpp std_msgs custom_interfaces)
 add_executable(panel_teleop_node src/panel_teleop_node.cpp)
 ament_target_dependencies(panel_teleop_node rclcpp std_msgs custom_interfaces)
 
-install(TARGETS
-  usb_monitor_node
-  system_status_node
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
