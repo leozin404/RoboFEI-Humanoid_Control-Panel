@@ -66,5 +66,6 @@ class ButtonFSM {
   static constexpr uint32_t HOLD_MS          = 5000;
 
   /* Active level: buttons are wired to pull-up + switch to GND (active LOW) */
-  static constexpr bool ACTIVE_LEVEL = true;
+  // static constexpr bool ACTIVE_LEVEL = true;
+  static constexpr bool ACTIVE_LOW = true;
 };
