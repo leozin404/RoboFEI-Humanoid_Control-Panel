@@ -56,6 +56,7 @@ void StmCommunicationNode::openSerialPort() {
     serial_->SetStopBits(LibSerial::StopBits::STOP_BITS_1);
 
     RCLCPP_INFO(this->get_logger(), "Serial port opened: %s", port_path_.c_str());
+    rx_buffer_.clear(); 
   } catch (const std::exception &e) {
     RCLCPP_ERROR(this->get_logger(), "Exception opening serial port %s: %s",
                  port_path_.c_str(), e.what());
@@ -76,6 +77,7 @@ void StmCommunicationNode::pollSerialInput() {
     RCLCPP_ERROR(this->get_logger(), "Serial read failed: %s. Marking port closed.",
                  e.what());
     serial_.reset();
+    rx_buffer_.clear(); 
     return;
   }
 
