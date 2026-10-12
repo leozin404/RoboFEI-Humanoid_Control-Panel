@@ -56,7 +56,7 @@ Section 4.3) but was superseded before implementation was finalized.
 
 - Interface reduced from ~10 buttons/~15 LEDs (Phase 1 concept) to
   **2 buttons / 7 LEDs**, using multi-function button gestures (single
-  click, double click, 5s hold)
+  click, double click, 2 s hold)
 
 ### Communication protocol change: ASCII → binary framed
 
@@ -124,46 +124,164 @@ Section 4.3) but was superseded before implementation was finalized.
   Project Properties → C/C++ Build → Settings → MCU G++ Compiler →
   General → Language standard)
 
----
-
-## USB traffic detection (usb_monitor_node): stat()/mtime → topic-based
-
-- **Initially attempted:** detect USB traffic via `stat()`/`mtime` polling
-  on `/dev/*` udev symlinks
-- **Rejected:** character devices generally don't update `mtime` on
-  ongoing `read()`/`write()` the way regular files do — would likely have
-  made every device report "constant" forever, never "blinking"
-- **Decision:** presence (constant/off) still via `stat()` on `/dev/*`.
-  Traffic (blinking) instead comes from subscribing to topics the owning
-  nodes already publish (`/imu/data` for IMU, `/image_raw` for camera),
-  using recent message arrival as the signal
-- **Known gap:** comm board has no obvious feedback topic yet; approximated
-  as "IMU traffic present" for now (both travel through the same board)
 
 ---
 
-## Closing the ButtonEvent consumer gap
+## Button timing (final values)
 
-- **Gap identified:** through initial implementation, every `ButtonEvent`
-  published had no subscriber anywhere — pressing a button triggered nothing
-- **Button 2 (toggle) → `system_status_node`:** owns launching/killing
-  `decision`, `control`, `robot_bringup` on toggle. A `process_launched_`
-  map tracks intent separately from heartbeat-confirmed liveness (can
-  disagree if a launch/kill silently fails — documented as future
-  cross-check improvement, not yet implemented)
-- **Button 1 (movement/GameController) → new `panel_teleop_node`:**
-  conceptually belongs in the `control` package of the main
-  `RoboFEI-HT_2023_SOFTWARE` repo (issues the same commands
-  `robot_joy_control` does); lives temporarily in `control_panel_pkg`
-  while developed standalone — **move it into `control` when merging**
-- **Arbitration rule:** while `/game_controller_connected` is true,
-  single/double click (Pos1/Macarena) are ignored — GC has priority for
-  movement commands. HOLD (connect GameController) is exempt, since it's
-  the action that establishes the GC link in the first place
-- **Known placeholders (not yet confirmed against real codebase):** exact
-  launch file names/paths (`decision.launch.py`, etc.); the real high-level
-  command interface `panel_teleop_node` should use instead of the current
-  `std_msgs/String` stand-in topic
+- **Hold threshold: 2 s.** The IC report (Table 14) still says 5 s and has to be aligned.
+- **Debounce window: 50 ms** (was 25 ms). Long presses were being misdetected on a breadboard
+  rig with real mechanical buttons, and the larger window fixed it.
+- **Double-click window: 400 ms** (unchanged).
+- The constants live in `button_fsm.hpp` (`HOLD_MS`, `DEBOUNCE_MS`, `DOUBLE_CLICK_MS`).
+
+---
+
+## USB presence and traffic (usb_monitor_node)
+
+- **Presence** (OFF vs ON): `stat()` on the udev symlink. Devices, from the `main`
+  rules: `/dev/motors` and `/dev/imu` are the two child ports of the same
+  communication board (the "Placa nova" block of `robot-usb-ports.rules`), and
+  `/dev/camera` is the C920. `/dev/motors` stands for the communication board, so
+  no `/dev/commboard` rule is needed. If the board is unplugged, the comm board
+  and IMU LEDs go off together; if only the IMU LED is off, the fault is the sensor.
+- **Traffic** (BLINK): message arrival, within a time window, on a topic that the
+  owner node already publishes. No byte counting and no access to the device file:
+  - IMU: `/imu/data` (`sensor_msgs/Imu`, UM7), 500 ms window
+  - camera: `/goalpost_count` (`std_msgs/Int32`), 1.5 s window. The vision
+    `detect` node opens `/dev/camera` itself through OpenCV, so there is no
+    `/image_raw`. The topic is published on every processed frame, also with 0
+    goalposts, and not at all if the camera cannot be read
+  - comm board: `/all_joints_position` (`custom_interfaces/JointState`), 500 ms window
+- **Why not `stat()`/`mtime` for traffic:** character devices do not update `mtime`
+  on `read()`/`write()` the way regular files do, so every device would report
+  "constant" forever.
+- **Limitation (comm board):** `motors_communication` publishes
+  `/all_joints_position` every 8 ms regardless of bus health, and its values are the
+  commanded positions. BLINK proves that the motors node loop is running, not that
+  the Dynamixel bus answers (see "Overload detection").
+- **Not verified at the source:** `um7_node` publishing `imu/data` as
+  `sensor_msgs/Imu` (confirmed only from the consumer side, `decision_node`).
+- Traffic subscriptions use `SensorDataQoS` (best effort), which connects to both
+  reliable and best-effort publishers.
+
+---
+
+## Button actions and process control (execution layer)
+
+Every `ButtonEvent` published by `stm_communication_pkg` has a consumer.
+
+**Button 1, `panel_teleop_node`**
+- Click: Pos 1. Double click: Macarena. Both are goals on the `control` action server
+  (`custom_interfaces/action/Control`, `/control_action`, `int32 action_number`), the same
+  interface `robot_joy_control` uses. From `control.cpp::choose_movement`: Pos 1 = 1
+  (Stand Still), Macarena = 36.
+- The client waits 500 ms for the server. If `control` is not up, the command is ignored
+  with a log warning (no queue). `control` took about 13 s to be ready on the development VM.
+- Hold: starts the GameController listener (`gamecontroller_bringup`, argument
+  `team_number`, default 7). The node `game_controller connect` listens to the official
+  GameController broadcast (UDP 3838) and answers on 3939. The connection itself depends on
+  that software being on the same network with the right team number. The LED follows
+  `/game_controller_connected` (true on the first packet, false after 20 s of silence).
+- Arbitration: while `/game_controller_connected` is true, click and double click are
+  ignored (the GameController has priority). Hold is exempt, since it is what starts the link.
+- Conceptually this node belongs in the `control` package of the team repository (it issues the
+  same commands as `robot_joy_control`). It lives in `control_panel_pkg` while the panel is
+  developed standalone: **move it into `control` when merging**.
+
+**Button 2, `system_status_node`**
+- Click: toggle `decision`. Double click: toggle `control`. Hold: toggle the Robot Bringup.
+- **Robot Bringup** = motors + IMU (UM7) + vision + decision + control, started as separate
+  processes, as the team does by hand today (one terminal each). `robot_bringup.launch.py` is
+  not used: on `main` it only includes vision and decision.
+- The decision toggle is blocked while the bringup is active. The bringup state drops back to
+  inactive if all its members die (after a 5 s grace period, because right after the hold the
+  children have not finished starting).
+- Real commands: `ros2 launch robot_bringup {decision,control,motors,vision,gamecontroller}_bringup.launch.py`
+  and, for the IMU, `ros2 run um7 um7_node` (parameter `imu_command`).
+
+**How processes are managed (`process_utils.hpp`)**
+- State comes from the operating system (`pgrep`), not from an intent flag, so a process started
+  by hand in a terminal is also seen as running and is toggled off correctly.
+- Processes are started with a double `fork/exec`, detached (`setsid`), from `repo_dir` (`control`
+  resolves its motion JSON relative to the working directory), with output in
+  `/tmp/panel_<name>.log`. They keep running if the panel stops.
+- They are stopped with SIGINT (the equivalent of Ctrl+C). Tested: a process started with
+  `sh -c "... &"` from a non-interactive shell inherits SIGINT ignored, so `pkill -INT` did
+  nothing. With `fork/exec` it stops, and the stop was confirmed on a real `ros2 launch`.
+- Failures are loud: a missing `repo_dir` is logged as an error at startup and on every start
+  attempt, and a bringup in which nothing started is not reported as active.
+
+---
+
+## Liveness: natural signals instead of heartbeat publishers
+
+The first design had every monitored node publishing `/<node>/heartbeat`. After reading the
+code of each package, almost none of them needs to be edited: the nodes already produce a
+usable sign of life. `system_status_node` feeds these signals into the same table as the
+explicit heartbeat topics (which are still accepted), with a 2 s timeout.
+
+| Node | Existing signal | What it proves |
+|---|---|---|
+| vision | `/goalpost_count`, every processed frame | camera delivering frames and model running |
+| um7 | `/imu/data` | IMU samples flowing (checked from the consumer side only) |
+| motors | `/all_joints_position`, every 8 ms | the loop runs (commanded values, not bus health) |
+| localization | `/localization_active`, every 500 ms, always true | the publisher is alive (package not built on the development VM) |
+| control | `/control_action` server discoverable | the server exists (`control` has no periodic output) |
+| decision | node `decision_node` present in the ROS graph | the weakest signal: it exists, not that it works |
+
+Reasons for not adding heartbeat publishers: it would mean editing `motors_pkg`, `control` and
+`decision` (walking-critical code in the team repository), the existing signals are stronger
+evidence than a timer, and it works without coordinating changes with the team. The only
+optional patch worth considering is a heartbeat from `RobotBehavior::players_behavior()` (the
+8 ms behavior timer), which would make the decision signal functional.
+
+---
+
+## Overload detection: not implemented in motors_pkg
+
+- `/motors/overload` has a subscriber (`system_status_node`) and no publisher. The aggregation
+  (topic to LED) was tested with a mock publisher; the detection itself does not exist.
+- In `motors_communication.cpp` the 8 ms loop is write-only: `setAllJointPos()` is a SyncWrite
+  (which has no status reply), and the SyncRead in `getNoTorquePos()` only covers motors whose
+  torque is off. With torque on, the node receives nothing from the motors, so overload cannot
+  be inferred from the current traffic, and `/all_joints_position` echoes commanded positions.
+- Detecting it needs a new periodic SyncRead of the Hardware Error Status register. On the
+  X series (XM430/XM540, Protocol 2, the table this code uses) it is at address 70, with bit 5 as
+  Overload Error (to be confirmed in the e-Manual). `robot_number` 4 uses Protocol 1, which has
+  no such register. With the default shutdown configuration the error stays latched, so slow
+  polling should be enough (also to be confirmed).
+- Risk and plan: the read shares the bus with the 8 ms position writes that hold the walking.
+  It must run at a low rate or in round-robin, behind a parameter that is off by default, and be
+  tested on the bench with the robot suspended. The code belongs to the team, so the change must
+  be discussed with the owner of `motors_pkg`.
+- By-product: the same read gives real bus health (replies received), which would make the comm
+  board LED and a motors heartbeat functional instead of "the loop is running".
+
+---
+
+## Validation status
+
+**Validated in simulation** (development VM; events and signals injected with `ros2 topic pub`;
+real `control`, `decision` and `gamecontroller_bringup` processes; no motors, camera, IMU or
+STM32 in the loop):
+- Button 1 click: Pos 1 goal sent and finished with `SUCCEEDED`.
+- Button 1 click and double click with the GameController connected: ignored with the priority
+  warning. Hold is not blocked and starts the listener.
+- Button 2: decision and control start and stop as real processes, with a clean SIGINT shutdown.
+- Button 2 hold: bringup toggles ON and OFF, the decision toggle is blocked while it is active.
+- LEDs: localization (natural topic), overload (aggregation only, mocked), Robot Bringup (five
+  signals, with control and decision real and the other three injected).
+- A wrong `repo_dir` is reported as an error instead of failing silently.
+
+**Not validated yet:**
+- Physical path with the final hardware: real button, serial, ROS 2, and back to a real LED.
+  Record the result of the hardware test here.
+- GameController with real UDP packets on the competition network.
+- Camera, IMU and comm board LEDs with real devices and real traffic.
+- Real overload detection (see "Overload detection").
+- Movement on the real robot, and `um7_node` publishing `imu/data` (checked from the consumer
+  side only).
 
 ---
 
@@ -263,27 +381,26 @@ workarounds) are flagged there as worth upstreaming to the team repo.
 
 ## Open items / pending decisions
 
-- [ ] **USB transport for the final PCB** — USBX standalone vs. external
-      USB-UART bridge chip (see discovery above); currently deferred
-- [ ] Confirm a suitable `motors_pkg` feedback topic to fold into comm
-      board's traffic detection (currently approximated via IMU traffic
-      alone)
-- [ ] Confirm actual topic names (`/imu/data`, `/image_raw`) against
-      um7/vision_pkg source before field testing `usb_monitor_node`
-- [ ] Confirm real launch file names/paths for decision, control, and
-      robot_bringup before relying on `toggleProcess()` in the field
-- [ ] Confirm how `robot_joy_control` actually issues high-level movement
-      commands to `control`, and replace `panel_teleop_node`'s placeholder
-      String topic with the real interface
-- [ ] Move `panel_teleop_node` into the `control` package once merging
-      with `RoboFEI-HT_2023_SOFTWARE`
-- [ ] Consider cross-checking `toggleProcess()`'s intent flag against
-      actual heartbeat liveness, to catch silently-failed launch/kill
-- [ ] Confirm Hardware Error Status register address for the Dynamixel
-      model in use (needed for `/motors/overload`)
-- [ ] Heartbeat publishers still need to be added to `decision`,
-      `vision_pkg`, `motors_pkg`, `um7`, `control` (only the subscriber
-      side exists so far, in `system_status_node`) — these are edits to
-      the main team repo, out of scope for this repo alone
-- [ ] New udev rules for the STM32 (`/dev/stm_panel`) and comm board
-      (`/dev/commboard`) in `robot_plugins/robot-usb-ports.rules`
+- [ ] **USB transport for the final PCB**: USBX standalone vs. external USB-UART bridge chip
+      (see the USB stack discovery above); currently deferred
+- [ ] **Overload detection**: opt-in periodic SyncRead of Hardware Error Status in `motors_pkg`
+      (address 70, bit 5 on the X series, to be confirmed; `robot_number` 4 uses Protocol 1).
+      Discuss with the owner of `motors_pkg`; bench test with the robot suspended. It would
+      also give real bus health for the comm board LED
+- [ ] Move `panel_teleop_node` into the `control` package, and merge `PanelStatus.msg` and
+      `ButtonEvent.msg` into the team's `custom_interfaces`, when integrating with
+      `RoboFEI-HT_2023_SOFTWARE`
+- [ ] New udev rule for the STM32 (`/dev/stm_panel`) in `robot_plugins/robot-usb-ports.rules`
+- [ ] Test the GameController with real UDP packets, and decide the `team_number` for the
+      competition (the default is 7)
+- [ ] Decide whether the Control toggle (Button 2, double click) must also be blocked while the
+      bringup is active (today it is not, and it stops `control` if it is running)
+- [ ] Pos 1 pressed before `control` is ready is ignored with a log-only warning, and there is no
+      monitor on the robot. LED_RBT_BU is the natural feedback channel
+- [ ] Verify at the source that `um7_node` publishes `imu/data` as `sensor_msgs/Imu`
+- [ ] Optional: heartbeat from `RobotBehavior::players_behavior()` in `decision`, to make its
+      liveness functional instead of "present in the graph"
+
+Resolved: real launch names and the `control` interface (action), the motors feedback topic for
+the comm board LED (with the limitation above), the comm board device (`/dev/motors`, so the
+`/dev/commboard` rule is not needed), and the heartbeat publishers (not needed, see "Liveness").
