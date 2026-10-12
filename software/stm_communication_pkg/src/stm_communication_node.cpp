@@ -1,6 +1,7 @@
 #include "stm_communication_pkg/stm_communication_node.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <rclcpp/executors/single_threaded_executor.hpp>
 
 using namespace std::chrono_literals;
