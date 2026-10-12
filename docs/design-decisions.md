@@ -113,7 +113,7 @@ Section 4.3) but was superseded before implementation was finalized.
 - `button_fsm.hpp/.cpp` and `led_driver.hpp/.cpp` take GPIO access via
   injected `std::function` (read/write callbacks) instead of direct
   `GPIO_TypeDef*`/HAL calls
-- **Reasoning:** only `main.cpp` needs to know pin numbers or which board
+- **Reasoning:** only `panel.cpp` needs to know pin numbers or which board
   it's running on. The FSM/driver logic is byte-for-byte identical across
   the production STM32U575CGT6 PCB and any test rig (Nucleo dev board),
   so test coverage on a dev board directly validates production logic
@@ -306,7 +306,7 @@ workarounds) are flagged there as worth upstreaming to the team repo.
 - **Reasoning it's valid:** thanks to the platform-agnostic firmware
   architecture (GPIO/UART access injected via `std::function`),
   `button_fsm`/`led_driver` require zero changes to run on the Nucleo —
-  only pin mapping and the communication transport layer in `main.cpp`
+  only pin mapping and the communication transport layer in `panel.cpp`
   differ. This validates 100% of the FSM/driver/framing logic against
   real mechanical buttons (including real debounce behavior) before any
   electrical risk is taken with the untested custom PCB
