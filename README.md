@@ -114,7 +114,7 @@ panel logs an error at startup and on every start attempt.
 
 ## Reports
 
-Partial and final IC reports are available in `docs/reports/`.
+Partial and final IC reports are available in `docs/`.
 
 ## Author
 
