@@ -1,28 +1,34 @@
 #include "control_panel_pkg/usb_monitor_node.hpp"
 
 #include <sys/stat.h>
+
 #include <rclcpp/executors/single_threaded_executor.hpp>
 
 namespace control_panel_pkg {
 
+template <typename MsgT>
+void UsbMonitorNode::watch(const std::string &topic, rclcpp::Time &stamp) {
+  // SensorDataQoS (best effort) connects to both reliable and best-effort
+  // publishers, so the monitor never stays deaf because of a QoS mismatch.
+  subs_.push_back(this->create_subscription<MsgT>(
+      topic, rclcpp::SensorDataQoS(),
+      [this, &stamp](const typename MsgT::SharedPtr) { stamp = this->now(); }));
+}
+
 UsbMonitorNode::UsbMonitorNode() : Node("usb_monitor_node") {
-  comm_board_presence_.devicePath =
-      this->declare_parameter<std::string>("comm_board_device", "/dev/commboard");
-  imu_presence_.devicePath =
-      this->declare_parameter<std::string>("imu_device", "/dev/imu");
-  cam_presence_.devicePath =
-      this->declare_parameter<std::string>("cam_device", "/dev/camera");
+  comm_board_.path = this->declare_parameter<std::string>("comm_board_device", "/dev/motors");
+  imu_.path = this->declare_parameter<std::string>("imu_device", "/dev/imu");
+  cam_.path = this->declare_parameter<std::string>("cam_device", "/dev/camera");
 
-  std::string imuTopic = this->declare_parameter<std::string>("imu_topic", "/imu/data");
-  std::string camTopic = this->declare_parameter<std::string>("cam_topic", "/image_raw");
+  traffic_window_ms_ = this->declare_parameter<int>("traffic_window_ms", 500);
+  cam_window_ms_ = this->declare_parameter<int>("cam_traffic_window_ms", 1500);
 
-  imu_data_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
-      imuTopic, 10,
-      [this](const sensor_msgs::msg::Imu::SharedPtr) { last_imu_msg_time_ = this->now(); });
-
-  cam_image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-      camTopic, 10,
-      [this](const sensor_msgs::msg::Image::SharedPtr) { last_cam_msg_time_ = this->now(); });
+  watch<custom_interfaces::msg::JointState>(
+      this->declare_parameter<std::string>("motors_topic", "/all_joints_position"), last_motors_);
+  watch<sensor_msgs::msg::Imu>(
+      this->declare_parameter<std::string>("imu_topic", "/imu/data"), last_imu_);
+  watch<std_msgs::msg::Int32>(
+      this->declare_parameter<std::string>("cam_topic", "/goalpost_count"), last_cam_);
 
   comm_board_pub_ = this->create_publisher<std_msgs::msg::UInt8>(
       "/painel_controle/usb_status/comm_board", 10);
@@ -31,72 +37,43 @@ UsbMonitorNode::UsbMonitorNode() : Node("usb_monitor_node") {
   cam_pub_ = this->create_publisher<std_msgs::msg::UInt8>(
       "/painel_controle/usb_status/cam", 10);
 
-  poll_timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(POLL_PERIOD_MS),
-      std::bind(&UsbMonitorNode::pollPresence, this));
+  timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(POLL_PERIOD_MS), std::bind(&UsbMonitorNode::poll, this));
 }
 
-bool UsbMonitorNode::checkPresence(const std::string &path) const {
+bool UsbMonitorNode::exists(const std::string &path) {
   struct stat st{};
-  return stat(path.c_str(), &st) == 0;
+  return stat(path.c_str(), &st) == 0;   // follows the udev symlink
 }
 
-bool UsbMonitorNode::isRecentTraffic(const rclcpp::Time &lastMsgTime) const {
-  if (lastMsgTime.nanoseconds() == 0) return false;   // never received anything
-  auto elapsed = this->now() - lastMsgTime;
-  return elapsed.nanoseconds() < static_cast<int64_t>(TRAFFIC_WINDOW_MS) * 1'000'000;
+bool UsbMonitorNode::recent(const rclcpp::Time &stamp, int windowMs) const {
+  if (stamp.nanoseconds() == 0) return false;   // never received anything
+  return (this->now() - stamp).nanoseconds() < static_cast<int64_t>(windowMs) * 1'000'000LL;
 }
 
-void UsbMonitorNode::pollPresence() {
-  bool commPresentNow = checkPresence(comm_board_presence_.devicePath);
-  bool imuPresentNow  = checkPresence(imu_presence_.devicePath);
-  bool camPresentNow  = checkPresence(cam_presence_.devicePath);
+void UsbMonitorNode::poll() {
+  const bool motorsTraffic = recent(last_motors_, traffic_window_ms_);
+  const bool imuTraffic = recent(last_imu_, traffic_window_ms_);
+  const bool camTraffic = recent(last_cam_, cam_window_ms_);
 
-  if (commPresentNow != comm_board_presence_.present) {
-    RCLCPP_INFO(this->get_logger(), "%s %s.", comm_board_presence_.devicePath.c_str(),
-                commPresentNow ? "connected" : "disconnected");
-  }
-  if (imuPresentNow != imu_presence_.present) {
-    RCLCPP_INFO(this->get_logger(), "%s %s.", imu_presence_.devicePath.c_str(),
-                imuPresentNow ? "connected" : "disconnected");
-  }
-  if (camPresentNow != cam_presence_.present) {
-    RCLCPP_INFO(this->get_logger(), "%s %s.", cam_presence_.devicePath.c_str(),
-                camPresentNow ? "connected" : "disconnected");
-  }
-
-  comm_board_presence_.present = commPresentNow;
-  imu_presence_.present = imuPresentNow;
-  cam_presence_.present = camPresentNow;
-
-  publishAll();
+  publishState("Comm board", comm_board_, motorsTraffic, comm_board_pub_);
+  publishState("IMU", imu_, imuTraffic, imu_pub_);
+  publishState("Camera", cam_, camTraffic, cam_pub_);
 }
 
-void UsbMonitorNode::publishAll() {
-  // comm_board: no dedicated topic of its own, approximated as "IMU
-  // traffic flowed recently" (see header TODO — extend with motors
-  // feedback once a suitable topic is confirmed).
-  bool commTraffic = isRecentTraffic(last_imu_msg_time_);
-  bool imuTraffic  = isRecentTraffic(last_imu_msg_time_);
-  bool camTraffic  = isRecentTraffic(last_cam_msg_time_);
+void UsbMonitorNode::publishState(
+    const char *label, Device &dev, bool traffic,
+    const rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr &pub) {
+  const bool present = exists(dev.path);
+  if (present != dev.present) {
+    RCLCPP_INFO(this->get_logger(), "%s (%s) %s", label, dev.path.c_str(),
+                present ? "connected" : "disconnected");
+    dev.present = present;
+  }
 
-  std_msgs::msg::UInt8 commMsg;
-  commMsg.data = !comm_board_presence_.present ? MODE_OFF
-                 : commTraffic                  ? MODE_BLINK
-                                                  : MODE_ON;
-  comm_board_pub_->publish(commMsg);
-
-  std_msgs::msg::UInt8 imuMsg;
-  imuMsg.data = !imu_presence_.present ? MODE_OFF
-                : imuTraffic            ? MODE_BLINK
-                                         : MODE_ON;
-  imu_pub_->publish(imuMsg);
-
-  std_msgs::msg::UInt8 camMsg;
-  camMsg.data = !cam_presence_.present ? MODE_OFF
-                : camTraffic            ? MODE_BLINK
-                                         : MODE_ON;
-  cam_pub_->publish(camMsg);
+  std_msgs::msg::UInt8 msg;
+  msg.data = !present ? MODE_OFF : (traffic ? MODE_BLINK : MODE_ON);
+  pub->publish(msg);
 }
 
 }  // namespace control_panel_pkg

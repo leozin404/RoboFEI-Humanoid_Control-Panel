@@ -1,82 +1,78 @@
-/**
- * @file    usb_monitor_node.hpp
- * @brief   Monitors USB device presence (via /dev/* symlinks) and traffic
- *          (via message arrival on existing topics) for the comm board,
- *          IMU, and camera.
- *
- * Presence (constant/off) is checked via stat() on the udev symlink —
- * this works reliably, since it only depends on the device file existing.
- *
- * Traffic (blinking) is NOT derived from stat()/mtime on the device file.
- * Character devices generally don't update mtime on read()/write() the
- * way regular files do, so that approach was tried and rejected (see
- * design-decisions.md). Instead, this node subscribes to topics that
- * other nodes (um7, vision_pkg) already publish, and treats a recent
- * message arrival as "traffic detected" — no extra access to the raw
- * device file is needed for this part.
- *
- * The comm board doesn't have a single topic of its own (it's a
- * transport, not a sensor) — its activity is inferred as "either motors
- * or IMU data flowed recently", since both travel through it.
- */
-
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
-#include <std_msgs/msg/u_int8.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/image.hpp>
+#include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/u_int8.hpp>
+#include <custom_interfaces/msg/joint_state.hpp>
 
+#include <cstdint>
 #include <string>
-#include <unordered_map>
+#include <vector>
 
 namespace control_panel_pkg {
 
+/**
+ * One LedMode (0=OFF, 1=ON, 2=BLINK) per device on
+ * /painel_controle/usb_status/{comm_board,imu,cam}.
+ *
+ *   OFF   : device node missing under /dev
+ *   ON    : device present, but its owner node has not published recently
+ *   BLINK : device present and its owner node published within the window
+ *
+ * "Traffic" is message arrival on a topic the owner already publishes (no
+ * byte counting, no extra access to the device file):
+ *   comm board -> /all_joints_position (motors_pkg). CAVEAT: motors_pkg
+ *                 publishes it every 8 ms regardless of bus health, so BLINK
+ *                 only proves the motors node is looping, not that the
+ *                 Dynamixel bus answers.
+ *   IMU        -> /imu/data (UM7)
+ *   camera     -> /goalpost_count (vision `detect` opens /dev/camera itself
+ *                 via OpenCV; there is no /image_raw)
+ *
+ * Devices (udev, branch main): /dev/motors and /dev/imu are the two child
+ * ports of the same communication board, /dev/camera is the C920.
+ */
 class UsbMonitorNode : public rclcpp::Node {
  public:
   UsbMonitorNode();
 
  private:
-  struct PresenceState {
-    std::string devicePath;
+  struct Device {
+    std::string path;
     bool present = false;
   };
 
-  void pollPresence();
-  void publishAll();
+  template <typename MsgT>
+  void watch(const std::string &topic, rclcpp::Time &stamp);
 
-  bool checkPresence(const std::string &path) const;
-  bool isRecentTraffic(const rclcpp::Time &lastMsgTime) const;
+  void poll();
+  void publishState(const char *label, Device &dev, bool traffic,
+                    const rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr &pub);
+  bool recent(const rclcpp::Time &stamp, int windowMs) const;
+  static bool exists(const std::string &path);
 
-  /* --- presence (stat-based) --- */
-  PresenceState comm_board_presence_;
-  PresenceState imu_presence_;
-  PresenceState cam_presence_;
+  Device comm_board_;
+  Device imu_;
+  Device cam_;
 
-  /* --- traffic (topic-based) --- */
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_data_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr cam_image_sub_;
-  // Motors doesn't have a convenient existing topic subscribed here yet;
-  // comm board traffic is approximated from IMU traffic alone for now.
-  // TODO: subscribe to a motors feedback topic once one is confirmed,
-  // and OR it in with imu traffic for comm_board's "recent activity".
+  rclcpp::Time last_motors_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_imu_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_cam_{0, 0, RCL_ROS_TIME};
 
-  rclcpp::Time last_imu_msg_time_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time last_cam_msg_time_{0, 0, RCL_ROS_TIME};
-
-  /* --- publishers --- */
+  std::vector<rclcpp::SubscriptionBase::SharedPtr> subs_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr comm_board_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr imu_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr cam_pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
 
-  rclcpp::TimerBase::SharedPtr poll_timer_;
+  int traffic_window_ms_ = 500;
+  int cam_window_ms_ = 1500;   // YOLO on CPU can be slow; frames may be >500 ms apart
 
-  static constexpr uint8_t MODE_OFF   = 0;
-  static constexpr uint8_t MODE_ON    = 1;
+  static constexpr uint8_t MODE_OFF = 0;
+  static constexpr uint8_t MODE_ON = 1;
   static constexpr uint8_t MODE_BLINK = 2;
-
-  static constexpr uint32_t POLL_PERIOD_MS       = 500;
-  static constexpr uint32_t TRAFFIC_WINDOW_MS    = 500;   // "recent" = within this window
+  static constexpr uint32_t POLL_PERIOD_MS = 500;
 };
 
 }  // namespace control_panel_pkg

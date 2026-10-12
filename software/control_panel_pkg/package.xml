@@ -4,9 +4,11 @@
   <name>control_panel_pkg</name>
   <version>0.1.0</version>
   <description>
-    Status aggregation logic for the RoboFEI control panel: USB presence
-    monitoring, motor overload, GameController connection, and node
-    heartbeats, consolidated into a single PanelStatus message.
+    Logic for the RoboFEI control panel: status aggregation (USB presence and
+    traffic, motor overload, GameController connection, node heartbeats) into
+    a single PanelStatus, and the actions behind the physical buttons (motions
+    through the control action server, GameController listener, bringup of the
+    vital nodes).
   </description>
   <maintainer email="leosilva200311@gmail.com">Leonardo Aparecido da Silva</maintainer>
   <license>TODO</license>
@@ -14,6 +16,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>custom_interfaces</depend>
@@ -22,4 +25,3 @@
     <build_type>ament_cmake</build_type>
   </export>
 </package>
-

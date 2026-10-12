@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(custom_interfaces REQUIRED)
@@ -17,13 +18,13 @@ find_package(custom_interfaces REQUIRED)
 include_directories(include)
 
 add_executable(usb_monitor_node src/usb_monitor_node.cpp)
-ament_target_dependencies(usb_monitor_node rclcpp std_msgs sensor_msgs)
+ament_target_dependencies(usb_monitor_node rclcpp std_msgs sensor_msgs custom_interfaces)
 
 add_executable(system_status_node src/system_status_node.cpp)
-ament_target_dependencies(system_status_node rclcpp std_msgs custom_interfaces)
+ament_target_dependencies(system_status_node rclcpp rclcpp_action std_msgs sensor_msgs custom_interfaces)
 
 add_executable(panel_teleop_node src/panel_teleop_node.cpp)
-ament_target_dependencies(panel_teleop_node rclcpp std_msgs custom_interfaces)
+ament_target_dependencies(panel_teleop_node rclcpp rclcpp_action std_msgs custom_interfaces)
 
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
@@ -37,4 +38,3 @@ install(TARGETS
 )
 
 ament_package()
-
