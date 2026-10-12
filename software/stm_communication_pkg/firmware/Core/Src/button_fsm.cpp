@@ -1,79 +1,71 @@
-#include "button_fsm.hpp"
+/**
+ * @file    button_fsm.hpp
+ * @brief   Non-blocking finite state machine for a single physical button.
+ *
+ * Detects three gestures per button: single click, double click, and a
+ * 5-second hold. Debounces in hardware-agnostic fashion (works against any
+ * HAL GPIO port/pin pair). Must be polled every main-loop iteration via
+ * update(); never blocks, never calls HAL_Delay().
+ *
+ * Timing constants match docs/design-decisions.md:
+ *   - Debounce window:      50 ms
+ *   - Double-click window: 400 ms
+ *   - Hold threshold:     2000 ms
+ */
 
-ButtonFSM::ButtonFSM(GPIO_TypeDef *port, uint16_t pin)
-    : port_(port), pin_(pin) {}
+#pragma once
 
-bool ButtonFSM::readRaw() const {
-  bool physicallyHigh = (HAL_GPIO_ReadPin(port_, pin_) == GPIO_PIN_SET);
-  return ACTIVE_LOW ? !physicallyHigh : physicallyHigh;
-}
+#include "main.h"   // for GPIO_TypeDef, GPIO HAL types
+#include <cstdint>
+#include <optional>
 
-bool ButtonFSM::readDebounced(uint32_t nowMs) {
-  bool raw = readRaw();
+enum class ClickType : uint8_t {
+  SINGLE_CLICK = 1,
+  DOUBLE_CLICK = 2,
+  HOLD         = 3
+};
 
-  if (raw != lastRawState_) {
-    lastRawChangeMs_ = nowMs;
-    lastRawState_ = raw;
-  }
+class ButtonFSM {
+ public:
+  ButtonFSM(GPIO_TypeDef *port, uint16_t pin);
 
-  if (nowMs - lastRawChangeMs_ > DEBOUNCE_MS) {
-    stableState_ = raw;
-  }
+  /**
+   * Call every main-loop iteration with the current tick count
+   * (e.g. HAL_GetTick()). Returns a ClickType only in the single
+   * iteration where a gesture is fully resolved; std::nullopt otherwise.
+   */
+  std::optional<ClickType> update(uint32_t nowMs);
 
-  return stableState_;
-}
+ private:
+  enum class State {
+    IDLE,
+    PRESSED,
+    WAIT_MORE
+  };
 
-std::optional<ClickType> ButtonFSM::update(uint32_t nowMs) {
-  bool pressed = readDebounced(nowMs);
+  bool readDebounced(uint32_t nowMs);
+  bool readRaw() const;
 
-  switch (state_) {
+  GPIO_TypeDef *port_;
+  uint16_t      pin_;
 
-    case State::IDLE:
-      if (pressed) {
-        t0_ = nowMs;
-        holdFired_ = false;
-        state_ = State::PRESSED;
-      }
-      break;
+  /* --- debounce filter state --- */
+  bool     lastRawState_    = false;   // last raw level seen
+  bool     stableState_     = false;   // debounced, trusted level
+  uint32_t lastRawChangeMs_ = 0;
 
-    case State::PRESSED:
-      if (pressed && !holdFired_ && (nowMs - t0_ >= HOLD_MS)) {
-        holdFired_ = true;
-        clk_ = 0;
-        return ClickType::HOLD;   // fires exactly once, guarded by holdFired_
-      }
+  /* --- gesture FSM state --- */
+  State    state_    = State::IDLE;
+  uint32_t clk_      = 0;
+  uint32_t t0_       = 0;       // press timestamp (for hold detection)
+  uint32_t tWait_    = 0;       // release timestamp (for double-click window)
+  bool     holdFired_ = false;
 
-      if (!pressed) {
-        if (holdFired_) {
-          // hold already resolved this press cycle — this release doesn't
-          // count as a click, just return to idle.
-          clk_ = 0;
-          state_ = State::IDLE;
-        } else {
-          clk_++;
-          tWait_ = nowMs;
-          state_ = State::WAIT_MORE;
-        }
-      }
-      break;
+  static constexpr uint32_t DEBOUNCE_MS      = 50;
+  static constexpr uint32_t DOUBLE_CLICK_MS  = 400;
+  static constexpr uint32_t HOLD_MS          = 2000;
 
-    case State::WAIT_MORE:
-      if (pressed) {
-        // new press arrived within the double-click window — go back to
-        // PRESSED, keep counting clicks, keep watching for hold too.
-        t0_ = nowMs;
-        holdFired_ = false;
-        state_ = State::PRESSED;
-      } else if (nowMs - tWait_ >= DOUBLE_CLICK_MS) {
-        ClickType result = (clk_ >= 2) ? ClickType::DOUBLE_CLICK
-                                         : ClickType::SINGLE_CLICK;
-        clk_ = 0;
-        state_ = State::IDLE;
-        return result;
-      }
-      break;
-  }
-
-  return std::nullopt;
-}
-
+  /* Active level: buttons are wired to 3V3 with an external 10k pull-down
+   * (R8/R9 on the PCB), so a pressed button reads HIGH (active HIGH). */
+  static constexpr bool ACTIVE_LOW = false;
+};
