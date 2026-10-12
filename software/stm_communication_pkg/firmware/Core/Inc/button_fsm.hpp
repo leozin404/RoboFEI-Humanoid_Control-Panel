@@ -8,9 +8,9 @@
  * update(); never blocks, never calls HAL_Delay().
  *
  * Timing constants match docs/design-decisions.md:
- *   - Debounce window:      25 ms
+ *   - Debounce window:      50 ms
  *   - Double-click window: 400 ms
- *   - Hold threshold:     5000 ms
+ *   - Hold threshold:     2000 ms
  */
 
 #pragma once
@@ -61,11 +61,11 @@ class ButtonFSM {
   uint32_t tWait_    = 0;       // release timestamp (for double-click window)
   bool     holdFired_ = false;
 
-  static constexpr uint32_t DEBOUNCE_MS      = 25;
+  static constexpr uint32_t DEBOUNCE_MS      = 50;
   static constexpr uint32_t DOUBLE_CLICK_MS  = 400;
-  static constexpr uint32_t HOLD_MS          = 5000;
+  static constexpr uint32_t HOLD_MS          = 2000;
 
-  /* Active level: buttons are wired to pull-up + switch to GND (active LOW) */
-  // static constexpr bool ACTIVE_LEVEL = true;
-  static constexpr bool ACTIVE_LOW = true;
+  /* Active level: buttons are wired to 3V3 with an external 10k pull-down
+   * (R8/R9 on the PCB), so a pressed button reads HIGH (active HIGH). */
+  static constexpr bool ACTIVE_LOW = false;
 };
